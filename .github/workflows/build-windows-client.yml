@@ -17,12 +17,21 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.22.3
           cache: true
+
+      - name: Install bridge generator
+        shell: bash
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
 
       - name: Inject custom client settings
         shell: bash
@@ -74,11 +83,24 @@ jobs:
                   p.write_text(s, encoding="utf-8")
           PY
 
-      - name: Build Windows client
+      - name: Generate bridge files
+        shell: bash
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./src/bridge_generated.rs
+
+      - name: Install Flutter dependencies
         shell: bash
         run: |
           cd flutter
           flutter pub get
+
+      - name: Build Windows client
+        shell: bash
+        run: |
+          cd flutter
           flutter build windows --release
 
       - name: Package artifact
