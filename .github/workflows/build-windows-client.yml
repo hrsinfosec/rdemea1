@@ -24,7 +24,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Inject custom settings
+      - name: Inject custom client settings
         shell: bash
         env:
           RENDEZVOUS_SERVER: ${{ secrets.RENDEZVOUS_SERVER }}
@@ -39,37 +39,46 @@ jobs:
           relay = os.environ["RELAY_SERVER"]
           key = os.environ["RS_PUB_KEY"]
 
-          files = [
+          candidates = [
+              Path("src/common.rs"),
               Path("libs/hbb_common/src/config.rs"),
-              Path("src/common.rs")
           ]
 
-          for p in files:
+          for p in candidates:
               if not p.exists():
                   continue
               s = p.read_text(encoding="utf-8")
 
               replacements = {
-                  'pub const RENDEZVOUS_SERVERS: &str = "";': f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";',
-                  'pub const RELAY_SERVERS: &str = "";': f'pub const RELAY_SERVERS: &str = "{relay}";',
-                  'pub const RS_PUB_KEY: &str = "";': f'pub const RS_PUB_KEY: &str = "{key}";',
-                  'pub fn get_custom_rendezvous_server() -> String { String::new() }': f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}',
-                  'pub fn get_custom_relay_server() -> String { String::new() }': f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}',
-                  'pub fn get_custom_key() -> String { String::new() }': f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}',
+                  'pub fn get_custom_rendezvous_server() -> String { String::new() }':
+                      f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}',
+                  'pub fn get_custom_relay_server() -> String { String::new() }':
+                      f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}',
+                  'pub fn get_custom_key() -> String { String::new() }':
+                      f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}',
+                  'pub const RENDEZVOUS_SERVERS: &str = "";':
+                      f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";',
+                  'pub const RELAY_SERVERS: &str = "";':
+                      f'pub const RELAY_SERVERS: &str = "{relay}";',
+                  'pub const RS_PUB_KEY: &str = "";':
+                      f'pub const RS_PUB_KEY: &str = "{key}";',
               }
 
+              changed = False
               for old, new in replacements.items():
                   if old in s:
                       s = s.replace(old, new)
+                      changed = True
 
-              p.write_text(s, encoding="utf-8")
+              if changed:
+                  p.write_text(s, encoding="utf-8")
           PY
 
       - name: Build Windows client
         shell: bash
         run: |
-          flutter pub get
           cd flutter
+          flutter pub get
           flutter build windows --release
 
       - name: Package artifact
