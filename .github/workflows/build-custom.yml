@@ -6,4 +6,7 @@ on:
 jobs:
   call-custom-windows-build:
     uses: ./.github/workflows/custom-windows-build.yml
+    with:
+      upload-artifact: true
+      upload-tag: custom
     secrets: inherit
