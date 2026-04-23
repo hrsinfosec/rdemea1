@@ -2,6 +2,13 @@ name: Custom RustDesk Windows Build
 
 on:
   workflow_call:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: custom
 
 jobs:
   generate-bridge:
@@ -33,6 +40,8 @@ jobs:
 
     env:
       FLUTTERVERSION: 3.24.5
+      TAGNAME: ${{ inputs.upload-tag }}
+      UPLOADARTIFACT: ${{ inputs.upload-artifact }}
       RENDEZVOUS_SERVER: ${{ vars.RENDEZVOUS_SERVER }}
       RELAY_SERVER: ${{ vars.RELAY_SERVER }}
       HIDE_NETWORK_SETTINGS: ${{ vars.HIDE_NETWORK_SETTINGS }}
@@ -96,19 +105,30 @@ jobs:
               if not p.exists():
                   continue
               s = p.read_text(encoding="utf-8")
-              s = s.replace('pub fn get_custom_rendezvous_server() -> String { String::new() }',
-                            f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}')
-              s = s.replace('pub fn get_custom_relay_server() -> String { String::new() }',
-                            f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}')
-              s = s.replace('pub fn get_custom_key() -> String { String::new() }',
-                            f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}')
-              s = s.replace('pub const RENDEZVOUS_SERVERS: &str = "";',
-                            f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";')
-              s = s.replace('pub const RELAY_SERVERS: &str = "";',
-                            f'pub const RELAY_SERVERS: &str = "{relay}";')
-              s = s.replace('pub const RS_PUB_KEY: &str = "";',
-                            f'pub const RS_PUB_KEY: &str = "{key}";')
-              p.write_text(s, encoding="utf-8")
+
+              replacements = {
+                  'pub fn get_custom_rendezvous_server() -> String { String::new() }':
+                      f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}',
+                  'pub fn get_custom_relay_server() -> String { String::new() }':
+                      f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}',
+                  'pub fn get_custom_key() -> String { String::new() }':
+                      f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}',
+                  'pub const RENDEZVOUS_SERVERS: &str = "";':
+                      f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";',
+                  'pub const RELAY_SERVERS: &str = "";':
+                      f'pub const RELAY_SERVERS: &str = "{relay}";',
+                  'pub const RS_PUB_KEY: &str = "";':
+                      f'pub const RS_PUB_KEY: &str = "{key}";',
+              }
+
+              changed = False
+              for old, new in replacements.items():
+                  if old in s:
+                      s = s.replace(old, new)
+                      changed = True
+
+              if changed:
+                  p.write_text(s, encoding="utf-8")
           PY
 
       - name: Build rustdesk
@@ -116,3 +136,38 @@ jobs:
         run: |
           python3 build.py --flutter --hwcodec --vram --skip-portable-pack --portable
           mv .flutter/build/windows/x64/runner/Release .rustdesk
+
+      - name: Upload unsigned
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-unsigned-windows-x64
+          path: .rustdesk
+
+      - name: Sign rustdesk files
+        if: env.UPLOADARTIFACT == 'true'
+        env:
+          SIGNBASEURL: ${{ secrets.SIGNBASEURL }}
+        shell: bash
+        run: |
+          pip3 install requests argparse
+          BASEURL="$SIGNBASEURL" SECRETKEY="${{ secrets.SIGNSECRETKEY }}" python3 resjob.py signfiles .rustdesk
+
+      - name: Build self-extracted executable
+        if: env.UPLOADARTIFACT == 'true'
+        shell: bash
+        run: |
+          sed -i 'dpiAware/d' res/manifest.xml
+          pushd .libs/portable
+          pip3 install -r requirements.txt
+          python3 generate.py -f ../../.rustdesk -o . -e ../../.rustdesk/rustdesk.exe
+          popd
+          mkdir -p .SignOutput
+          mv .target/release/rustdesk-portable-packer.exe .SignOutput/rustdesk-${{ github.ref_name }}-x64.exe
+
+      - name: Upload artifact
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-${{ github.ref_name }}-x64
+          path: .SignOutput
