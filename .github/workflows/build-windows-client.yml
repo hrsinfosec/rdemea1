@@ -86,7 +86,7 @@ jobs:
                   p.write_text(s, encoding="utf-8")
           PY
 
-      - name: Install Flutter dependencies
+      - name: Prepare Flutter packages
         shell: bash
         run: |
           cd flutter
