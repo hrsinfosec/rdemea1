@@ -322,6 +322,41 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
+      - name: Patch custom client values
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          rendezvous = os.environ["RENDEZVOUS_SERVER"]
+          relay = os.environ["RELAY_SERVER"]
+          key = os.environ["RS_PUB_KEY"]
+
+          candidates = [
+              Path("src/common.rs"),
+              Path("libs/hbb_common/src/config.rs"),
+          ]
+
+          for p in candidates:
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding="utf-8")
+              s = s.replace('pub fn get_custom_rendezvous_server() -> String { String::new() }',
+                            f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}')
+              s = s.replace('pub fn get_custom_relay_server() -> String { String::new() }',
+                            f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}')
+              s = s.replace('pub fn get_custom_key() -> String { String::new() }',
+                            f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}')
+              s = s.replace('pub const RENDEZVOUS_SERVERS: &str = "";',
+                            f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";')
+              s = s.replace('pub const RELAY_SERVERS: &str = "";',
+                            f'pub const RELAY_SERVERS: &str = "{relay}";')
+              s = s.replace('pub const RS_PUB_KEY: &str = "";',
+                            f'pub const RS_PUB_KEY: &str = "{key}";')
+              p.write_text(s, encoding="utf-8")
+          PY
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
