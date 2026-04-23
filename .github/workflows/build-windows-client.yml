@@ -1,4 +1,4 @@
-name: Build RustDesk Windows Client
+name: Custom RustDesk Windows Build
 
 on:
   workflow_call:
@@ -8,48 +8,85 @@ on:
         default: true
       upload-tag:
         type: string
-        default: nightly
-  workflow_dispatch:
+        default: custom
 
 jobs:
-  build:
-    runs-on: windows-latest
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+    with:
+      upload-artifact: true
+
+  build-RustDeskTempTopMostWindow:
+    uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
+    with:
+      upload-artifact: true
+
+  build-for-windows-flutter:
+    name: build-for-windows-flutter
+    needs:
+      - build-RustDeskTempTopMostWindow
+      - generate-bridge
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            arch: x86_64
+            vcpkg-triplet: x64-windows-static
+            platform: x64
+
+    env:
+      FLUTTERVERSION: 3.24.5
+      TAGNAME: ${{ inputs.upload-tag }}
+      UPLOADARTIFACT: ${{ inputs.upload-artifact }}
+      RENDEZVOUS_SERVER: ${{ vars.RENDEZVOUS_SERVER }}
+      RELAY_SERVER: ${{ vars.RELAY_SERVER }}
+      HIDE_NETWORK_SETTINGS: ${{ vars.HIDE_NETWORK_SETTINGS }}
+      RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
 
     steps:
-      - name: Checkout RustDesk
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL)
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN)
+
+      - name: Checkout source code
         uses: actions/checkout@v4
         with:
-          repository: rustdesk/rustdesk
           submodules: recursive
-          fetch-depth: 0
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
         with:
-          toolchain: 1.75.0
+          name: bridge-artifact
+          path: .
 
-      - name: Install rustfmt
-        shell: bash
-        run: rustup component add rustfmt --toolchain 1.75.0
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: 15.0.6
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+      - name: Install flutter
+        uses: subosito/flutter-action@v2.12.0
         with:
           channel: stable
-          flutter-version: 3.24.5
+          flutter-version: ${{ env.FLUTTERVERSION }}
           cache: true
 
-      - name: Install bridge generator
-        shell: bash
-        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --locked
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.75.0
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
 
-      - name: Inject custom client settings
+      - name: Patch custom client values
         shell: bash
-        env:
-          RENDEZVOUS_SERVER: ${{ vars.RENDEZVOUS_SERVER }}
-          RELAY_SERVER: ${{ vars.RELAY_SERVER }}
-          HIDE_NETWORK_SETTINGS: ${{ vars.HIDE_NETWORK_SETTINGS }}
-          RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -94,33 +131,43 @@ jobs:
                   p.write_text(s, encoding="utf-8")
           PY
 
-      - name: Prepare Flutter packages
+      - name: Build rustdesk
         shell: bash
         run: |
-          cd flutter
-          flutter pub get
+          python3 build.py --flutter --hwcodec --vram --skip-portable-pack --portable
+          mv .flutter/build/windows/x64/runner/Release .rustdesk
 
-      - name: Generate bridge files
-        shell: bash
-        run: |
-          ~/.cargo/bin/flutter_rust_bridge_codegen \
-            --rust-input ./src/flutter_ffi.rs \
-            --dart-output ./flutter/lib/generated_bridge.dart \
-            --c-output ./src/bridge_generated.rs
+      - name: Upload unsigned
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-unsigned-windows-x64
+          path: .rustdesk
 
-      - name: Build Windows client
+      - name: Sign rustdesk files
+        if: env.UPLOADARTIFACT == 'true'
+        env:
+          SIGNBASEURL: ${{ secrets.SIGNBASEURL }}
         shell: bash
         run: |
-          cd flutter
-          flutter build windows --release
+          pip3 install requests argparse
+          BASEURL="$SIGNBASEURL" SECRETKEY="${{ secrets.SIGNSECRETKEY }}" python3 resjob.py signfiles .rustdesk
 
-      - name: Package artifact
+      - name: Build self-extracted executable
+        if: env.UPLOADARTIFACT == 'true'
         shell: bash
         run: |
-          powershell -Command "Compress-Archive -Path flutter/build/windows/x64/runner/Release/* -DestinationPath rustdesk-windows-client.zip -Force"
+          sed -i 'dpiAware/d' res/manifest.xml
+          pushd .libs/portable
+          pip3 install -r requirements.txt
+          python3 generate.py -f ../../.rustdesk -o . -e ../../.rustdesk/rustdesk.exe
+          popd
+          mkdir -p .SignOutput
+          mv .target/release/rustdesk-portable-packer.exe .SignOutput/rustdesk-${{ github.ref_name }}-x64.exe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
         with:
-          name: rustdesk-windows-client
-          path: rustdesk-windows-client.zip
+          name: rustdesk-${{ github.ref_name }}-x64
+          path: .SignOutput
