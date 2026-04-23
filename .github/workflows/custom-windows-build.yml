@@ -1,0 +1,172 @@
+name: Custom RustDesk Windows Build
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: nightly
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+    with:
+      upload-artifact: true
+
+  build-RustDeskTempTopMostWindow:
+    uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
+    with:
+      upload-artifact: true
+
+  build-for-windows-flutter:
+    name: build-for-windows-flutter
+    needs:
+      - build-RustDeskTempTopMostWindow
+      - generate-bridge
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            arch: x86_64
+            vcpkg-triplet: x64-windows-static
+            platform: x64
+
+    env:
+      FLUTTERVERSION: 3.24.5
+      TAGNAME: ${{ inputs.upload-tag }}
+      UPLOADARTIFACT: ${{ inputs.upload-artifact }}
+      RENDEZVOUS_SERVER: ${{ vars.RENDEZVOUS_SERVER }}
+      RELAY_SERVER: ${{ vars.RELAY_SERVER }}
+      HIDE_NETWORK_SETTINGS: ${{ vars.HIDE_NETWORK_SETTINGS }}
+      RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL)
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN)
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: .
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: 15.0.6
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTERVERSION }}
+          cache: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.75.0
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Patch custom client values
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          rendezvous = os.environ["RENDEZVOUS_SERVER"]
+          relay = os.environ["RELAY_SERVER"]
+          key = os.environ["RS_PUB_KEY"]
+
+          candidates = [
+              Path("src/common.rs"),
+              Path("libs/hbb_common/src/config.rs"),
+          ]
+
+          for p in candidates:
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding="utf-8")
+              replacements = {
+                  'pub fn get_custom_rendezvous_server() -> String { String::new() }':
+                      f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}',
+                  'pub fn get_custom_relay_server() -> String { String::new() }':
+                      f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}',
+                  'pub fn get_custom_key() -> String { String::new() }':
+                      f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}',
+                  'pub const RENDEZVOUS_SERVERS: &str = "";':
+                      f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";',
+                  'pub const RELAY_SERVERS: &str = "";':
+                      f'pub const RELAY_SERVERS: &str = "{relay}";',
+                  'pub const RS_PUB_KEY: &str = "";':
+                      f'pub const RS_PUB_KEY: &str = "{key}";',
+              }
+
+              changed = False
+              for old, new in replacements.items():
+                  if old in s:
+                      s = s.replace(old, new)
+                      changed = True
+
+              if changed:
+                  p.write_text(s, encoding="utf-8")
+          PY
+
+      - name: Build rustdesk
+        shell: bash
+        run: |
+          python3 build.py --flutter --hwcodec --vram --skip-portable-pack --portable
+          mv .flutter/build/windows/x64/runner/Release .rustdesk
+
+      - name: Upload unsigned
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-unsigned-windows-x64
+          path: .rustdesk
+
+      - name: Sign rustdesk files
+        if: env.UPLOADARTIFACT == 'true'
+        env:
+          SIGNBASEURL: ${{ secrets.SIGNBASEURL }}
+        shell: bash
+        run: |
+          pip3 install requests argparse
+          BASEURL="$SIGNBASEURL" SECRETKEY="${{ secrets.SIGNSECRETKEY }}" python3 resjob.py signfiles .rustdesk
+
+      - name: Build self-extracted executable
+        if: env.UPLOADARTIFACT == 'true'
+        shell: bash
+        run: |
+          sed -i 'dpiAware/d' res/manifest.xml
+          pushd .libs/portable
+          pip3 install -r requirements.txt
+          python3 generate.py -f ../../.rustdesk -o . -e ../../.rustdesk/rustdesk.exe
+          popd
+          mkdir -p .SignOutput
+          mv .target/release/rustdesk-portable-packer.exe .SignOutput/rustdesk-${{ github.ref_name }}-x64.exe
+
+      - name: Upload artifact
+        if: env.UPLOADARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-${{ github.ref_name }}-x64
+          path: .SignOutput
