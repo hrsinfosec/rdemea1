@@ -1,0 +1,84 @@
+name: Build RustDesk Windows Client
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout RustDesk
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Inject custom settings
+        shell: bash
+        env:
+          RENDEZVOUS_SERVER: ${{ secrets.RENDEZVOUS_SERVER }}
+          RELAY_SERVER: ${{ secrets.RELAY_SERVER }}
+          RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+
+          rendezvous = os.environ["RENDEZVOUS_SERVER"]
+          relay = os.environ["RELAY_SERVER"]
+          key = os.environ["RS_PUB_KEY"]
+
+          files = [
+              Path("libs/hbb_common/src/config.rs"),
+              Path("src/common.rs")
+          ]
+
+          for p in files:
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding="utf-8")
+
+              replacements = {
+                  'pub const RENDEZVOUS_SERVERS: &str = "";': f'pub const RENDEZVOUS_SERVERS: &str = "{rendezvous}";',
+                  'pub const RELAY_SERVERS: &str = "";': f'pub const RELAY_SERVERS: &str = "{relay}";',
+                  'pub const RS_PUB_KEY: &str = "";': f'pub const RS_PUB_KEY: &str = "{key}";',
+                  'pub fn get_custom_rendezvous_server() -> String { String::new() }': f'pub fn get_custom_rendezvous_server() -> String {{ "{rendezvous}".to_string() }}',
+                  'pub fn get_custom_relay_server() -> String { String::new() }': f'pub fn get_custom_relay_server() -> String {{ "{relay}".to_string() }}',
+                  'pub fn get_custom_key() -> String { String::new() }': f'pub fn get_custom_key() -> String {{ "{key}".to_string() }}',
+              }
+
+              for old, new in replacements.items():
+                  if old in s:
+                      s = s.replace(old, new)
+
+              p.write_text(s, encoding="utf-8")
+          PY
+
+      - name: Build Windows client
+        shell: bash
+        run: |
+          flutter pub get
+          cd flutter
+          flutter build windows --release
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          powershell -Command "Compress-Archive -Path flutter/build/windows/x64/runner/Release/* -DestinationPath rustdesk-windows-client.zip -Force"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-windows-client
+          path: rustdesk-windows-client.zip
