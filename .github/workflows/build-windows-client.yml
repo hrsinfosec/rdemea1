@@ -20,6 +20,10 @@ jobs:
         with:
           toolchain: 1.75.0
 
+      - name: Install rustfmt
+        shell: bash
+        run: rustup component add rustfmt --toolchain 1.75.0
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -29,9 +33,7 @@ jobs:
 
       - name: Install bridge generator
         shell: bash
-        run: |
-          cargo install cargo-expand --version 1.0.95 --locked
-          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --locked
 
       - name: Inject custom client settings
         shell: bash
