@@ -38,8 +38,9 @@ jobs:
       - name: Inject custom client settings
         shell: bash
         env:
-          RENDEZVOUS_SERVER: ${{ secrets.RENDEZVOUS_SERVER }}
-          RELAY_SERVER: ${{ secrets.RELAY_SERVER }}
+          RENDEZVOUS_SERVER: ${{ vars.RENDEZVOUS_SERVER }}
+          RELAY_SERVER: ${{ vars.RELAY_SERVER }}
+          HIDE_NETWORK_SETTINGS: ${{ vars.HIDE_NETWORK_SETTINGS }}
           RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
           python - <<'PY'
@@ -48,6 +49,7 @@ jobs:
 
           rendezvous = os.environ["RENDEZVOUS_SERVER"]
           relay = os.environ["RELAY_SERVER"]
+          hide_network = os.environ.get("HIDE_NETWORK_SETTINGS", "Y")
           key = os.environ["RS_PUB_KEY"]
 
           candidates = [
